@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { cookies } from "next/headers";
-import { getChatGPTUser } from "../../chatgpt-auth";
+import { getAdminUser } from "../../admin-auth";
 import generatePayload from "promptpay-qr";
 import QRCode from "qrcode";
 export const dynamic="force-dynamic";
@@ -8,7 +8,7 @@ function db(){if(!env.DB)throw new Error("DATABASE_UNAVAILABLE");return env.DB;}
 const json=(v:unknown,status=200)=>Response.json(v,{status,headers:{"Cache-Control":"no-store"}});
 class Problem extends Error { constructor(public code:number,message:string){super(message)} }
 function fail(code:number,message:string):never{throw new Problem(code,message)}
-async function admin(){const user=await getChatGPTUser();if(!user||user.email.toLowerCase()!==(env.ADMIN_EMAIL??process.env.ADMIN_EMAIL??"").toLowerCase())fail(403,"กรุณาเข้าสู่ระบบด้วยบัญชีเจ้าของร้าน");return user;}
+async function admin(){const user=await getAdminUser();if(!user)fail(403,"กรุณาเข้าสู่ระบบด้วยบัญชีเจ้าของร้าน");return user;}
 async function token(){const c=await cookies();let value=c.get("mint-customer")?.value;if(!value||!/^[a-f0-9-]{36}$/.test(value)){value=crypto.randomUUID();c.set("mint-customer",value,{httpOnly:true,sameSite:"lax",secure:process.env.NODE_ENV==="production",path:"/",maxAge:60*60*24*90});}return value;}
 function text(v:unknown,max=100){if(typeof v!=="string"||v.length>max)fail(400,"ข้อมูลไม่ถูกต้อง");return v.trim();}
 function integer(v:unknown,min:number,max:number){if(typeof v!=="number"||!Number.isInteger(v)||v<min||v>max)fail(400,"จำนวนหรือราคาไม่ถูกต้อง");return v;}

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { digest } from '../lib/admin-password.mjs';
 const origin=process.env.MINT_TEST_URL??'http://127.0.0.1:5173';
 assert.match(origin,/^http:\/\/(127\.0\.0\.1|localhost):\d+$/,'Run only on a local test instance');
 class Client{
@@ -12,9 +13,11 @@ class Client{
  }
 }
 const admin=new Client(),guest=new Client(),other=new Client(),testProducts=[],testOrders=[];
-const signin=await fetch(origin+'/signin-with-chatgpt?return_to=/admin',{redirect:'manual'});
-admin.cookie=signin.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ');
-assert.ok(admin.cookie,'Local mock sign-in cookie');
+const password=process.env.MINT_TEST_PASSWORD,email=process.env.MINT_TEST_EMAIL;
+assert.ok(password&&email,'Run node scripts/test-local.mjs');
+const signin=await admin.request('/api/admin-auth',{body:{email,password},headers:{origin}});
+assert.equal(signin.status,200,'Owner password login');
+assert.ok(admin.cookie.includes('mint-admin='),'Owner session cookie');
 const initial=(await admin.request('/api/admin/overview')).data;
 assert.ok(initial.settings,'Admin sign-in works');
 const settings=initial.settings;
@@ -23,6 +26,15 @@ const create=async(client,pid,qty=1)=>{const id=crypto.randomUUID();testOrders.p
 const product=async(stock)=>{const id=crypto.randomUUID();testProducts.push(id);const r=await admin.request('/api/admin/product',{body:{id,name:'SMOKE-TEST',description:'Temporary local test',category:'ทดสอบ',price:1234,stock,active:1,image:'/images/mala-hero.png',position:999}});assert.equal(r.status,200);return id};
 try{
  check((await guest.request('/api/admin/overview')).status===403,'Guest cannot read admin');
+ check((await guest.request('/api/admin/overview',{headers:{'oai-authenticated-user-id':'forged','oai-authenticated-user-email':email}})).status===403,'Sites headers cannot impersonate an owner');
+ check((await guest.request('/api/admin-image',{method:'POST',headers:{'x-mint-action':'1'}})).status===403,'Menu upload requires owner');
+ check((await guest.request('/api/admin-auth',{body:{email,password},headers:{origin:'https://evil.example'}})).status===403,'Cross-origin login rejected');
+ check((await guest.request('/api/admin-auth',{body:{email,password:'not-the-owner-password-long'},headers:{origin}})).status===401,'Wrong password rejected');
+ check((await guest.request('/api/admin-auth',{body:{email:'wrong@example.test',password},headers:{origin}})).status===401,'Wrong email rejected');
+ const adminPage=await fetch(origin+'/admin',{redirect:'manual'});
+ check(adminPage.status===307&&adminPage.headers.get('location')?.includes('/admin/login'),'Guest redirected to owner login');
+ const jar=new Client();jar.cookie='mint-admin='+('a'.repeat(64));
+ check((await jar.request('/api/admin/overview')).status===403,'Invented session rejected');
  check((await create(guest,'pork')).status===409,'No merchant account means no checkout');
  assert.equal((await admin.request('/api/admin/settings',{body:{name:settings.name,target:'0800000000',recipient:'LOCAL TEST ONLY',open:1}})).status,200);
  const sold=await product(0);check((await create(guest,sold)).status===409,'Sold-out item cannot be ordered');
@@ -63,15 +75,34 @@ try{
  await winnerClient.request('/api/cancel/'+winner.id,{body:{}});
  const expiry=await create(guest,racePid,1);assert.equal(expiry.status,201);
  const cmd="UPDATE orders SET expires=1 WHERE id='"+expiry.id+"'";
- const exec=spawnSync(process.execPath,['--import','./scripts/sites-env.mjs','./node_modules/wrangler/bin/wrangler.js','d1','execute','DB','--local','--config','dist/server/wrangler.json','--persist-to','.wrangler/state','--command',cmd],{encoding:'utf8'});assert.equal(exec.status,0,exec.stderr);
+ const exec=spawnSync(process.execPath,['./node_modules/wrangler/bin/wrangler.js','d1','execute','DB','--local','--config','wrangler.jsonc','--persist-to','.wrangler/mint-cloudflare','--command',cmd],{encoding:'utf8'});assert.equal(exec.status,0,exec.stderr);
  await guest.request('/api/catalog');
  check((await guest.request('/api/orders/'+expiry.id)).data.status==='CANCELLED','Unpaid reservation expires');
  check((await guest.request('/api/catalog')).data.products.find(p=>p.id===racePid).stock===2,'Expiry returns stock');
  check((await admin.request('/api/admin/product',{body:{...catalog.products.find(p=>p.id===pid),stock:-1,expectedStock:1}})).status===400,'Negative stock rejected');
- console.log('PASS: '+checks+' local checks; orders, money, concurrency, stock, expiry, access, QR, R2 and lifecycle.');
 }finally{
  await admin.request('/api/admin/settings',{body:settings});
  const ids=testOrders.map(id=>"'"+id+"'").join(','),pids=testProducts.map(id=>"'"+id+"'").join(',');
  const cleanup="DELETE FROM stock_movements WHERE order_id IN ("+ids+") OR product_id IN ("+pids+"); DELETE FROM order_items WHERE order_id IN ("+ids+"); DELETE FROM orders WHERE id IN ("+ids+"); DELETE FROM products WHERE id IN ("+pids+");";
- const result=spawnSync(process.execPath,['--import','./scripts/sites-env.mjs','./node_modules/wrangler/bin/wrangler.js','d1','execute','DB','--local','--config','dist/server/wrangler.json','--persist-to','.wrangler/state','--command',cleanup],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);
+ const result=spawnSync(process.execPath,['./node_modules/wrangler/bin/wrangler.js','d1','execute','DB','--local','--config','wrangler.jsonc','--persist-to','.wrangler/mint-cloudflare','--command',cleanup],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);
 }
+const stolen=admin.cookie;
+const sessionToken=stolen.split('; ').find(c=>c.startsWith('mint-admin='))?.slice('mint-admin='.length);
+const sessionId=await digest(sessionToken);
+const setSession=sql=>{const result=spawnSync(process.execPath,['./node_modules/wrangler/bin/wrangler.js','d1','execute','DB','--local','--config','wrangler.jsonc','--persist-to','.wrangler/mint-cloudflare','--command',sql],{encoding:'utf8'});assert.equal(result.status,0,result.stderr)};
+setSession("UPDATE admin_sessions SET expires=1 WHERE id='"+sessionId+"'");
+check((await admin.request('/api/admin/overview')).status===403,'Expired session rejected');
+setSession("UPDATE admin_sessions SET expires="+(Date.now()+60000)+",password_version='old-password' WHERE id='"+sessionId+"'");
+check((await admin.request('/api/admin/overview')).status===403,'Session from an old password rejected');
+const currentPasswordHash=readFileSync('.dev.vars','utf8').match(/^ADMIN_PASSWORD_HASH=(.+)$/m)[1].trim();
+setSession("UPDATE admin_sessions SET password_version='"+(await digest(currentPasswordHash))+"' WHERE id='"+sessionId+"'");
+check((await admin.request('/api/admin/overview')).status===200,'Valid session restored before checking logout');
+check((await admin.request('/api/admin-auth',{method:'DELETE',headers:{origin,'x-mint-action':'1'}})).status===200,'Logout revokes session');
+admin.cookie=stolen;
+check((await admin.request('/api/admin/overview')).status===403,'Logged-out cookie cannot be replayed');
+let limited;
+for(let i=0;i<10;i++){limited=await guest.request('/api/admin-auth',{body:{email,password:'wrong-password-20-characters'},headers:{origin}});if(limited.status===429)break;}
+check(limited.status===429,'Repeated password attempts rate limited');
+const key=await digest('local');
+const cleanAuth=spawnSync(process.execPath,['./node_modules/wrangler/bin/wrangler.js','d1','execute','DB','--local','--config','wrangler.jsonc','--persist-to','.wrangler/mint-cloudflare','--command',"DELETE FROM login_limits WHERE id='"+key+"'"],{encoding:'utf8'});assert.equal(cleanAuth.status,0);
+console.log('PASS: '+checks+' local checks; password login, CSRF, impersonation, logout, rate limits, orders, stock, expiry, QR and R2.');

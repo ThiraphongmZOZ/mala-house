@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import { createPasswordHash, verifyPassword, digest, randomToken } from '../lib/admin-password.mjs';
+const password = 'Mint-local-test-' + randomToken();
+const hash = await createPasswordHash(password);
+assert.equal(await verifyPassword(password, hash), true);
+assert.equal(await verifyPassword(password + 'wrong', hash), false);
+assert.equal(await verifyPassword(password, undefined), false);
+assert.equal(await verifyPassword(password, hash.replace('100000', '1')), false);
+assert.notEqual(hash, await createPasswordHash(password), 'Unique salts');
+await assert.rejects(createPasswordHash('too-short'));
+assert.notEqual(randomToken(), randomToken());
+assert.match(await digest(randomToken()), /^[a-f0-9]{64}$/);
+console.log('PASS: password verification, salt, malformed hash, missing config and random sessions.');
