@@ -10,7 +10,8 @@ CREATE TABLE `order_items` (
 	CONSTRAINT "qty_positive" CHECK("order_items"."qty" > 0)
 );
 --> statement-breakpoint
-CREATE INDEX `idx_items_order_id` ON `order_items` (`order_id`);--> statement-breakpoint
+CREATE INDEX `idx_items_order_id` ON `order_items` (`order_id`);
+--> statement-breakpoint
 CREATE TABLE `stock_movements` (
 	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	`product_id` text NOT NULL,
@@ -38,8 +39,10 @@ CREATE TABLE `orders` (
 	`slip_type` text
 );
 --> statement-breakpoint
-CREATE INDEX `idx_orders_created` ON `orders` (`created`);--> statement-breakpoint
-CREATE INDEX `idx_orders_token` ON `orders` (`token`);--> statement-breakpoint
+CREATE INDEX `idx_orders_created` ON `orders` (`created`);
+--> statement-breakpoint
+CREATE INDEX `idx_orders_token` ON `orders` (`token`);
+--> statement-breakpoint
 CREATE TABLE `products` (
 	`id` text PRIMARY KEY NOT NULL,
 	`name` text NOT NULL,
@@ -62,24 +65,8 @@ CREATE TABLE `settings` (
 	`open` integer DEFAULT 1 NOT NULL
 );
 --> statement-breakpoint
-CREATE TRIGGER validate_order_stock BEFORE INSERT ON order_items
-BEGIN
- SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM products WHERE id=NEW.product_id AND active=1 AND stock>=NEW.qty)
- THEN RAISE(ABORT,'STOCK_UNAVAILABLE') END;
-END;
+CREATE TRIGGER validate_order_stock BEFORE INSERT ON order_items BEGIN SELECT RAISE(ABORT,'STOCK_UNAVAILABLE') WHERE NOT EXISTS (SELECT 1 FROM products WHERE id=NEW.product_id AND active=1 AND stock>=NEW.qty); END;
 --> statement-breakpoint
-CREATE TRIGGER deduct_order_stock AFTER INSERT ON order_items
-BEGIN
- UPDATE products SET stock=stock-NEW.qty WHERE id=NEW.product_id;
- INSERT INTO stock_movements(product_id,delta,reason,order_id,created)
- VALUES(NEW.product_id,-NEW.qty,'จองสำหรับออเดอร์',NEW.order_id,(SELECT created FROM orders WHERE id=NEW.order_id));
-END;
+CREATE TRIGGER deduct_order_stock AFTER INSERT ON order_items BEGIN UPDATE products SET stock=stock-NEW.qty WHERE id=NEW.product_id; INSERT INTO stock_movements(product_id,delta,reason,order_id,created) VALUES(NEW.product_id,-NEW.qty,'จองสำหรับออเดอร์',NEW.order_id,(SELECT created FROM orders WHERE id=NEW.order_id)); END;
 --> statement-breakpoint
-CREATE TRIGGER restore_cancelled_stock AFTER UPDATE OF status ON orders
-WHEN NEW.status='CANCELLED' AND OLD.status!='CANCELLED'
-BEGIN
- UPDATE products SET stock=stock+COALESCE((SELECT SUM(qty) FROM order_items WHERE order_id=NEW.id AND product_id=products.id),0)
- WHERE id IN (SELECT product_id FROM order_items WHERE order_id=NEW.id);
- INSERT INTO stock_movements(product_id,delta,reason,order_id,created)
- SELECT product_id,qty,'คืนจากออเดอร์ยกเลิก',NEW.id,CAST(strftime('%s','now') AS INTEGER)*1000 FROM order_items WHERE order_id=NEW.id;
-END;
+CREATE TRIGGER restore_cancelled_stock AFTER UPDATE OF status ON orders WHEN NEW.status='CANCELLED' AND OLD.status!='CANCELLED' BEGIN UPDATE products SET stock=stock+COALESCE((SELECT SUM(qty) FROM order_items WHERE order_id=NEW.id AND product_id=products.id),0) WHERE id IN (SELECT product_id FROM order_items WHERE order_id=NEW.id); INSERT INTO stock_movements(product_id,delta,reason,order_id,created) SELECT product_id,qty,'คืนจากออเดอร์ยกเลิก',NEW.id,CAST(strftime('%s','now') AS INTEGER)*1000 FROM order_items WHERE order_id=NEW.id; END;
