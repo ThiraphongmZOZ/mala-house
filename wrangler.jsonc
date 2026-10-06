@@ -1,11 +1,12 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "mint-mala",
+  "workers_dev": true,
+  "preview_urls": false,
   "account_id": "2d6ccf94948696af8ee245cabea39b36",
   "main": "./build/worker.ts",
   "compatibility_date": "2026-05-15",
   "compatibility_flags": ["nodejs_compat"],
   "d1_databases": [{ "binding": "DB", "database_name": "mint-mala-db", "database_id": "b513d094-72d5-42c6-8314-f1a0942561dc", "migrations_dir": "./drizzle" }],
-  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "mint-mala-files" }],
   "observability": { "enabled": true }
 }

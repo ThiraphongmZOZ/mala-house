@@ -21,6 +21,8 @@ assert.ok(admin.cookie.includes('mint-admin='),'Owner session cookie');
 const initial=(await admin.request('/api/admin/overview')).data;
 assert.ok(initial.settings,'Admin sign-in works');
 const settings=initial.settings;
+const testImage=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jUZkAAAAASUVORK5CYII=','base64');
+const testImages=[];
 let checks=0;function check(value,msg){assert.ok(value,msg);checks++;}
 const create=async(client,pid,qty=1)=>{const id=crypto.randomUUID();testOrders.push(id);const r=await client.request('/api/orders',{body:{id,customer:'SMOKE-MINT',note:'Local development check',spicy:'เผ็ดกลาง',total:1,items:[{id:pid,qty,price:1}]}});return {...r,id}};
 const product=async(stock)=>{const id=crypto.randomUUID();testProducts.push(id);const r=await admin.request('/api/admin/product',{body:{id,name:'SMOKE-TEST',description:'Temporary local test',category:'ทดสอบ',price:1234,stock,active:1,image:'/images/mala-hero.png',position:999}});assert.equal(r.status,200);return id};
@@ -53,14 +55,22 @@ try{
  check((await admin.request('/api/admin/order/'+o.id,{body:{action:'approve'}})).status===409,'No approval before slip');
  const bad=new FormData();bad.append('file',new Blob(['not-an-image'],{type:'image/png'}),'fake.png');
  check((await guest.request('/api/payment/'+o.id,{file:bad})).status===400,'File signature validation');
- const form=new FormData();form.append('file',new Blob([readFileSync('public/images/pork-belly.png')],{type:'image/png'}),'local-test.png');
- const uploadResult=await guest.request('/api/payment/'+o.id,{file:form});check(uploadResult.status===200,'R2 slip upload '+JSON.stringify(uploadResult));
+ const tooLarge=new FormData();tooLarge.append('file',new Blob([Buffer.alloc(500001)],{type:'image/png'}),'large.png');
+ check((await guest.request('/api/payment/'+o.id,{file:tooLarge})).status===400,'Oversized file rejected');
+ const menuForm=new FormData();menuForm.append('file',new Blob([testImage],{type:'image/png'}),'menu.png');
+ const menuImage=await admin.request('/api/admin-image',{file:menuForm});
+ check(menuImage.status===200,'Owner can store menu image in D1');
+ testImages.push(menuImage.data.image.split('/').at(-1));
+ const imageResult=await fetch(origin+menuImage.data.image);
+ check(imageResult.status===200&&Buffer.from(await imageResult.arrayBuffer()).equals(testImage),'Public product image round-trips unchanged');
+ const form=new FormData();form.append('file',new Blob([testImage],{type:'image/png'}),'local-test.png');
+ const uploadResult=await guest.request('/api/payment/'+o.id,{file:form});check(uploadResult.status===200,'D1 files slip upload '+JSON.stringify(uploadResult));
  check((await other.request('/api/slip/'+o.id)).status===403,'Private slips stay private');
  check((await admin.request('/api/slip/'+o.id)).status===200,'Owner can inspect slip');
  check((await admin.request('/api/admin/order/'+o.id,{body:{action:'READY'}})).status===409,'State cannot skip cooking');
  assert.equal((await admin.request('/api/admin/order/'+o.id,{body:{action:'reject'}})).status,200);
  check((await guest.request('/api/orders/'+o.id)).data.payment==='REJECTED','Reject requests new slip');
- const f2=new FormData();f2.append('file',new Blob([readFileSync('public/images/pork-belly.png')],{type:'image/png'}),'local-test.png');
+ const f2=new FormData();f2.append('file',new Blob([testImage],{type:'image/png'}),'local-test.png');
  assert.equal((await guest.request('/api/payment/'+o.id,{file:f2})).status,200);
  for(const action of ['approve','COOKING','READY','COMPLETED'])assert.equal((await admin.request('/api/admin/order/'+o.id,{body:{action}})).status,200);
  check((await guest.request('/api/orders/'+o.id)).data.status==='COMPLETED','Full order lifecycle');
@@ -83,7 +93,8 @@ try{
 }finally{
  await admin.request('/api/admin/settings',{body:settings});
  const ids=testOrders.map(id=>"'"+id+"'").join(','),pids=testProducts.map(id=>"'"+id+"'").join(',');
- const cleanup="DELETE FROM stock_movements WHERE order_id IN ("+ids+") OR product_id IN ("+pids+"); DELETE FROM order_items WHERE order_id IN ("+ids+"); DELETE FROM orders WHERE id IN ("+ids+"); DELETE FROM products WHERE id IN ("+pids+");";
+ const uploadCleanup="DELETE FROM uploads WHERE id LIKE 'slips/%' AND id IN (SELECT slip FROM orders WHERE id IN ("+ids+")); "+testImages.map(id=>"DELETE FROM uploads WHERE id='products/"+id+"';").join('');
+ const cleanup=uploadCleanup+"DELETE FROM stock_movements WHERE order_id IN ("+ids+") OR product_id IN ("+pids+"); DELETE FROM order_items WHERE order_id IN ("+ids+"); DELETE FROM orders WHERE id IN ("+ids+"); DELETE FROM products WHERE id IN ("+pids+");";
  const result=spawnSync(process.execPath,['./node_modules/wrangler/bin/wrangler.js','d1','execute','DB','--local','--config','wrangler.jsonc','--persist-to','.wrangler/mint-cloudflare','--command',cleanup],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);
 }
 const stolen=admin.cookie;
@@ -105,4 +116,4 @@ for(let i=0;i<10;i++){limited=await guest.request('/api/admin-auth',{body:{email
 check(limited.status===429,'Repeated password attempts rate limited');
 const key=await digest('local');
 const cleanAuth=spawnSync(process.execPath,['./node_modules/wrangler/bin/wrangler.js','d1','execute','DB','--local','--config','wrangler.jsonc','--persist-to','.wrangler/mint-cloudflare','--command',"DELETE FROM login_limits WHERE id='"+key+"'"],{encoding:'utf8'});assert.equal(cleanAuth.status,0);
-console.log('PASS: '+checks+' local checks; password login, CSRF, impersonation, logout, rate limits, orders, stock, expiry, QR and R2.');
+console.log('PASS: '+checks+' local checks; password login, CSRF, impersonation, logout, rate limits, orders, stock, expiry, QR and D1 files.');

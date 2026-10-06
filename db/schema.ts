@@ -1,5 +1,7 @@
-import { sqliteTable, text, integer, index, check } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, index, check, blob } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
+// ponytail: Small shop files share D1's 500 MB free database limit; move uploads to object storage when needed.
+export const uploads = sqliteTable("uploads", { id:text("id").primaryKey(), type:text("type").notNull(), data:blob("data",{mode:"buffer"}).notNull() }, t=>[check("upload_size",sql`length(${t.data}) <= 500000`)]);
 export const adminSessions = sqliteTable("admin_sessions", { id:text("id").primaryKey(), ownerEmail:text("owner_email").notNull(), passwordVersion:text("password_version").notNull(), expires:integer("expires").notNull() });
 export const loginLimits = sqliteTable("login_limits", { id:text("id").primaryKey(), attempts:integer("attempts").notNull(), expires:integer("expires").notNull() });
 export const settings = sqliteTable("settings", { id: integer("id").primaryKey(), name:text("name").notNull(), target:text("target").notNull().default(""), recipient:text("recipient").notNull().default(""), open:integer("open").notNull().default(1) });
